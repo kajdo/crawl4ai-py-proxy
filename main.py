@@ -1,0 +1,109 @@
+import os
+import json
+from typing import List, Optional
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import httpx
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()
+
+PROXY_PORT = int(os.getenv("PROXY_PORT", "9999"))
+PROXY_IP = os.getenv("PROXY_IP", "")
+CRAWL4AI_ENDPOINT = os.getenv("CRAWL4AI_ENDPOINT", "http://localhost:11235/crawl")
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class CrawlRequest(BaseModel):
+    urls: List[str]
+
+
+class SuccessResponseItem(BaseModel):
+    page_content: str
+    metadata: dict
+
+
+SuccessResponse = List[SuccessResponseItem]
+
+
+class ErrorResponse(BaseModel):
+    error: str
+    detail: str
+
+
+class CrawlResponse(BaseModel):
+    results: List[dict]
+
+
+@app.post("/crawl", response_model=SuccessResponse)
+async def crawl(request: CrawlRequest, http_request: Request):
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    print(f"Request to crawl {request.urls} from {client_ip}")
+
+    payload = request.model_dump()
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(CRAWL4AI_ENDPOINT, json=payload)
+
+        if response.status_code != 200:
+            print(f"502 bad gateway :: {client_ip}")
+            raise HTTPException(status_code=502, detail="bad gateway")
+
+        crawl_data = response.json()
+        
+        ret = []
+        for result in crawl_data.get("results", []):
+            metadata = result.get("metadata", {}) or {}
+            
+            # Remove empty metadata values
+            metadata = {k: v for k, v in metadata.items() if v}
+            metadata["source"] = result.get("url", "")
+            
+            ret.append(SuccessResponseItem(
+                page_content=result.get("markdown", {}).get("raw_markdown", ""),
+                metadata=metadata
+            ))
+
+        print(f"200 :: {client_ip}")
+        return ret
+
+    except httpx.RequestError as e:
+        print(f"502 bad gateway :: {client_ip} - {str(e)}")
+        raise HTTPException(status_code=502, detail="bad gateway")
+    except json.JSONDecodeError:
+        print(f"502 bad gateway - invalid json from crawl api :: {client_ip}")
+        raise HTTPException(status_code=502, detail="bad gateway - invalid json received from crawl api")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/")
+def root():
+    return {
+        "service": "OpenWebUI to Crawl4AI Proxy",
+        "endpoints": ["/crawl", "/health"],
+        "crawl4ai": CRAWL4AI_ENDPOINT,
+        "proxy_port": PROXY_PORT
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    listen_address = f"{PROXY_IP}:{PROXY_PORT}" if PROXY_IP else f"0.0.0.0:{PROXY_PORT}"
+    print(f"Listening on {listen_address}")
+    uvicorn.run(app, host=PROXY_IP or "0.0.0.0", port=PROXY_PORT)
