@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Optional
+from typing import List
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ load_dotenv()
 
 PROXY_PORT = int(os.getenv("PROXY_PORT", "9999"))
 PROXY_IP = os.getenv("PROXY_IP", "")
-CRAWL4AI_ENDPOINT = os.getenv("CRAWL4AI_ENDPOINT", "http://localhost:11235/crawl")
+CRAWL4AI_ENDPOINT = os.getenv("CRAWL4AI_ENDPOINT", "http://localhost:11235/md")
 
 app = FastAPI()
 
@@ -29,52 +29,30 @@ class CrawlRequest(BaseModel):
     urls: List[str]
 
 
-class SuccessResponseItem(BaseModel):
-    page_content: str
-    metadata: dict
-
-
-SuccessResponse = List[SuccessResponseItem]
-
-
-class ErrorResponse(BaseModel):
-    error: str
-    detail: str
-
-
-class CrawlResponse(BaseModel):
-    results: List[dict]
-
-
-@app.post("/crawl", response_model=SuccessResponse)
+@app.post("/crawl")
 async def crawl(request: CrawlRequest, http_request: Request):
     client_ip = http_request.client.host if http_request.client else "unknown"
     print(f"Request to crawl {request.urls} from {client_ip}")
 
-    payload = request.model_dump()
+    ret = []
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(CRAWL4AI_ENDPOINT, json=payload)
+            for url in request.urls:
+                payload = {
+                    "url": url,
+                    "f": "fit",
+                    "q": None,
+                    "c": "0"
+                }
+                response = await client.post(CRAWL4AI_ENDPOINT, json=payload)
 
-        if response.status_code != 200:
-            print(f"502 bad gateway :: {client_ip}")
-            raise HTTPException(status_code=502, detail="bad gateway")
+                if response.status_code != 200:
+                    print(f"502 bad gateway for {url} :: {client_ip}")
+                    raise HTTPException(status_code=502, detail="bad gateway")
 
-        crawl_data = response.json()
-        
-        ret = []
-        for result in crawl_data.get("results", []):
-            metadata = result.get("metadata", {}) or {}
-            
-            # Remove empty metadata values
-            metadata = {k: v for k, v in metadata.items() if v}
-            metadata["source"] = result.get("url", "")
-            
-            ret.append(SuccessResponseItem(
-                page_content=result.get("markdown", {}).get("raw_markdown", ""),
-                metadata=metadata
-            ))
+                crawl_data = response.json()
+                ret.append(crawl_data)
 
         print(f"200 :: {client_ip}")
         return ret
