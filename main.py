@@ -33,11 +33,12 @@ class CrawlRequest(BaseModel):
 async def crawl(request: CrawlRequest, http_request: Request):
     client_ip = http_request.client.host if http_request.client else "unknown"
     print(f"Request to crawl {request.urls} from {client_ip}")
+    print(f"CRAWL4AI_ENDPOINT: {CRAWL4AI_ENDPOINT}")
 
     ret = []
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             for url in request.urls:
                 payload = {
                     "url": url,
@@ -45,16 +46,22 @@ async def crawl(request: CrawlRequest, http_request: Request):
                     "q": None,
                     "c": "0"
                 }
+                print(f"Calling {CRAWL4AI_ENDPOINT} with payload: {payload}")
                 response = await client.post(CRAWL4AI_ENDPOINT, json=payload)
+
+                print(f"Response status: {response.status_code}")
+                print(f"Response text: {response.text[:500]}")  # First 500 chars
 
                 if response.status_code != 200:
                     print(f"502 bad gateway for {url} :: {client_ip}")
                     raise HTTPException(status_code=502, detail="bad gateway")
 
                 crawl_data = response.json()
+                print(f"Parsed crawl_data: {crawl_data}")
                 ret.append(crawl_data)
 
         print(f"200 :: {client_ip}")
+        print(f"Returning: {ret}")
         return ret
 
     except httpx.RequestError as e:
